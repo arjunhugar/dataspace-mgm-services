@@ -160,6 +160,7 @@ def _step_input(input: dict) -> str:
 # ------------------------------------------------------------------------------- steps (README 8)
 def open_review(input: dict) -> dict:
     aid, cfg = _step_input(input), config()
+    errors: list[str] = []
     with _lock:
         case = cases.get(by_application.get(aid, ""))
         if case is None or case["status"] == "OPEN":
@@ -191,8 +192,6 @@ def open_review(input: dict) -> dict:
                 errors = [k for k, c in case["checks"].items() if c["result"] == "ERROR"]
                 if not errors and _auto_approve(case, cfg):
                     _approved(case, None, None, auto=True)
-        else:
-            errors = []
         _audit(case, "open-review", step=input)
         if errors and set(errors) <= case.get("_rejected", set()):   # a repetition does not help (OPEN-QUESTIONS 11)
             raise Problem(MODULE, 502, "neighbour-rejected", detail=f"checks with ERROR: {', '.join(errors)}",

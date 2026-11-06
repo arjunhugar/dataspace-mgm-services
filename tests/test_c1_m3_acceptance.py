@@ -472,6 +472,14 @@ def test_19_close_review(env, client):
     assert problem(e)["status"] == 409 and problem(e)["retryable"] is False
 
 
+def test_19_open_review_of_a_withdrawn_application_without_a_case(env):
+    r = step("open", "A16")   # 8.1 step 2: a closed review case, no checks, DONE
+    assert r["state"] == "DONE" and r["result"]["status"] == "CLOSED" and r["result"]["checks"] == []
+    case = interface.cases[case_id("A16")]
+    assert case["closure"]["reason"] == "WITHDRAWN" and not events.RELAY.log
+    assert step("open", "A16", 2)["result"] == r["result"] and len(interface.cases) == 1
+
+
 def test_20_withdrawn_before_close_review(env, client):
     step("open", "A9")
     env.set_status("A9", "WITHDRAWN")
