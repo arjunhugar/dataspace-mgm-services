@@ -214,6 +214,14 @@ def _check_roles(company_roles: object, errors: list[dict]) -> None:
         errors.append(_err("companyRoles", "without duplicates"))
 
 
+def _is_uuid(value: object) -> bool:
+    try:
+        uuid.UUID(value)
+    except (ValueError, TypeError, AttributeError):
+        return False
+    return True
+
+
 def _check_create(body: dict) -> None:
     """7.2 step 2 with the rules of 6.2."""
     errors: list[dict] = []
@@ -230,6 +238,10 @@ def _check_create(body: dict) -> None:
     reference = body.get("companyId") or body.get("bpn")
     if body.get("companyId") and body.get("bpn"):
         errors.append(_err("companyId", "companyId and bpn must not both be given"))
+    if body.get("companyId") and not _is_uuid(body["companyId"]):
+        errors.append(_err("companyId", "must be a UUID"))
+    if body.get("bpn") and not (isinstance(body["bpn"], str) and re.fullmatch(r"BPNL[A-Z0-9]{12}", body["bpn"])):
+        errors.append(_err("bpn", "must be a BPN"))
     if kind == "ONBOARDING" and reference:
         errors.append(_err("companyId", "no reference for ONBOARDING"))
     if kind == "REACTIVATION" and not reference:
@@ -478,10 +490,13 @@ def update_application(application_id: str, sub: str, body: dict) -> dict:
     change = {k: body[k] for k in allowed if k in body}
     if not change:
         raise _validation([_err("body", f"at least one of {', '.join(allowed)}")])
-    errors: list[dict] = []
+    errors: list[dict] = [_err(k, "must not be null") for k in ("legalName", "address", "identifiers")
+                          if k in change and change[k] is None]
     _check_company_fields(change, errors)
     if "companyRoles" in change:
         _check_roles(change["companyRoles"], errors)
+    if a["verification"] == "DOCUMENTS" and change.get("identifiers") == []:
+        errors.append(_err("identifiers", "at least one identifier for DOCUMENTS"))
     if errors:
         raise _validation(errors)
     company_claim = (a.get("_attestationClaims") or {}).get("company")

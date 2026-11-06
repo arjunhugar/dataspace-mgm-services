@@ -126,10 +126,12 @@ def _signed_payload(token: str, cfg: dict) -> tuple[dict, dict]:
         payload = jwt.decode(token, options={"verify_signature": False})
     except (jwt.PyJWTError, ValueError, TypeError) as e:
         raise _invalid("format") from e
+    if not cfg["issuer"]:   # an address of another system: the installation must set it (FRAMEWORK 4.8)
+        raise Problem(MODULE, 502, "upstream-error", detail="ATTESTATION_ISSUER is not set", retryable=False)
     alg = header.get("alg")
-    if not alg or alg.lower() == "none" or alg not in cfg["algorithms"] or header.get("typ") != TYP:
+    if not isinstance(alg, str) or alg.lower() == "none" or alg not in cfg["algorithms"] or header.get("typ") != TYP:
         raise _invalid("algorithm")
-    if not cfg["issuer"] or payload.get("iss") != cfg["issuer"]:
+    if payload.get("iss") != cfg["issuer"]:
         raise _invalid("issuer")
     jwk = _key(header.get("kid"))
     if jwk is None:
@@ -151,15 +153,37 @@ def _text(value: object, maximum: int = 500) -> bool:
     return isinstance(value, str) and 1 <= len(value) <= maximum
 
 
+def _optional_text(value: object) -> bool:
+    return value is None or isinstance(value, str)
+
+
+def _evidence_valid(evidence: object) -> bool:
+    return isinstance(evidence, list) and all(
+        isinstance(e, dict) and all(_text(e.get(k)) for k in ("type", "vct", "issuer", "wallet"))
+        and isinstance(e.get("status_checked"), bool) for e in evidence)
+
+
+def _address_valid(address: object) -> bool:
+    return address is None or (isinstance(address, dict) and all(
+        _optional_text(address.get(k)) for k in ("street_address", "postal_code", "locality", "country")))
+
+
+def _representation_valid(rep: dict) -> bool:
+    return (isinstance(rep.get("confirmed"), bool) and isinstance(rep.get("reasons") or [], list)
+            and all(_optional_text(rep.get(k)) for k in ("result", "type", "role", "valid_until", "issuer", "trust")))
+
+
 def _claims_valid(p: dict) -> bool:
     person, company, rep = p.get("person"), p.get("company"), p.get("representation")
     if not (isinstance(person, dict) and isinstance(company, dict) and isinstance(rep, dict)):
         return False
+    if not (_optional_text(company.get("euid")) and _address_valid(company.get("address"))):
+        return False
     numbers = isinstance(p.get("verified_at"), (int, float)) and not isinstance(p.get("verified_at"), bool)
     return (numbers and _text(p.get("jti"), 200) and _text(p.get("client_id")) and _text(person.get("given_name"))
             and _text(person.get("family_name")) and _text(company.get("legal_name")) and _text(company.get("ebwoid"))
-            and p.get("sub") == company.get("ebwoid") and isinstance(rep.get("confirmed"), bool)
-            and isinstance(p.get("evidence"), list) and catalog.country(company.get("country")) is not None)
+            and p.get("sub") == company.get("ebwoid") and _representation_valid(rep)
+            and _evidence_valid(p.get("evidence")) and catalog.country(company.get("country")) is not None)
 
 
 def verify(token: str, claims: dict) -> tuple[dict, dict]:

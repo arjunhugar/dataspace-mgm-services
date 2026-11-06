@@ -24,6 +24,7 @@
 #################################################################################
 """C1-M2 Registration: the acceptance cases of README 13 with the built-in stand-ins of C3-M1 and C1-M3 and
 with verification attestations that the tests sign themselves (README 14.4, 14.5)."""
+import base64
 import json
 import time
 import uuid
@@ -324,10 +325,9 @@ def test_11_too_old_at_submission_and_replacement(client, env, monkeypatch):
     assert r.status_code == 409 and r.json()["type"] == "urn:c1-m2:problem:attestation-expired"
     url = api(f"/applications/{a['id']}/attestation")
     assert client.put(url, headers=_h("erika"), json={"attestation": env.sign()}).status_code == 200
+    r = client.put(url, headers=_h("erika"), json={"attestation": old})   # the old `jti` stays used
+    assert r.status_code == 409 and r.json()["type"] == "urn:c1-m2:problem:attestation-used"
     assert submit(client, a["id"]).status_code == 200
-    a2 = client.post(api("/applications"), headers=_h("max"), json=onboarding(old))
-    assert a2.status_code == 400 and a2.json()["reason"] == "person"
-    assert a["attestation"]["attestationId"] in interface.used_jtis
 
 
 def test_12_replacement_of_another_company(client, env):
@@ -557,3 +557,51 @@ def test_26_audit_and_no_personal_data(client, env):
         assert secret not in text
     assert token not in json.dumps(client.get(api(f"/applications/{aid}"), headers=_h("erika")).json())
     assert token not in json.dumps(interface.get_application_internal(applicationId=aid))
+
+
+# ------------------------------------------------------------- findings of the module review
+@pytest.mark.parametrize("change", [{"identifiers": []}, {"identifiers": None}, {"legalName": None}, {"address": None}])
+def test_patch_keeps_required_company_data(client, env, change):
+    aid = client.post(api("/applications"), headers=_h("erika"), json=documents_body()).json()["id"]
+    before = json.dumps(interface.applications[aid]["companyData"])
+    r = client.patch(api(f"/applications/{aid}"), headers=_h("erika"), json=change)
+    assert r.status_code == 400 and r.json()["type"] == "urn:c1-m2:problem:validation"
+    assert json.dumps(interface.applications[aid]["companyData"]) == before
+
+
+def test_patch_without_identifiers_of_the_person_on_the_ebw_path(client, env):
+    aid = created(client, env)["id"]
+    r = client.patch(api(f"/applications/{aid}"), headers=_h("erika"), json={"identifiers": []})
+    assert r.status_code == 200
+    assert {i["type"] for i in r.json()["companyData"]["identifiers"]} == {"EBWOID", "EUID"}
+
+
+def test_token_with_alg_that_is_not_text(client, env):
+    def part(d):
+        return base64.urlsafe_b64encode(json.dumps(d).encode()).rstrip(b"=").decode()
+    token = part({"alg": 123, "typ": "ebw-attestation+jwt", "kid": KID}) + "." + part(env.payload()) + ".AAAA"
+    r = client.post(api("/applications"), headers=_h("erika"), json=onboarding(token))
+    assert r.status_code == 400 and r.json()["reason"] == "algorithm"
+
+
+@pytest.mark.parametrize("reference", [{"companyId": "not-a-uuid"}, {"companyId": 12}, {"bpn": "x"}])
+def test_reference_in_a_wrong_format(client, env, reference):
+    body = {"kind": "REACTIVATION", "verification": "EBW", "attestation": env.sign(company="werkzeugbau")} | reference
+    r = client.post(api("/applications"), headers=_h("erika"), json=body)
+    assert r.status_code == 400 and r.json()["type"] == "urn:c1-m2:problem:validation"
+
+
+@pytest.mark.parametrize("over", [
+    {"evidence": ["x"]}, {"evidence": [{"type": "PID"}]},
+    {"company": {**COMPANIES["maschinenbau"], "country": "DE", "address": "Weg 1"}},
+    {"company": {**COMPANIES["maschinenbau"], "country": "DE", "euid": 123}},
+    {"representation": {"confirmed": True, "reasons": "x"}}])
+def test_signed_attestation_with_malformed_claims(client, env, over):
+    r = client.post(api("/applications"), headers=_h("erika"), json=onboarding(env.sign(payload=env.payload() | over)))
+    assert r.status_code == 400 and r.json()["reason"] == "claims" and not interface.applications
+
+
+def test_issuer_not_configured_names_the_variable(client, env, monkeypatch):
+    monkeypatch.delenv("ATTESTATION_ISSUER")
+    r = client.post(api("/applications"), headers=_h("erika"), json=onboarding(env.sign()))
+    assert r.status_code == 502 and "ATTESTATION_ISSUER" in r.json()["detail"]
