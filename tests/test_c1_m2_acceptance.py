@@ -26,6 +26,7 @@
 with verification attestations that the tests sign themselves (README 14.4, 14.5)."""
 import base64
 import json
+import threading
 import time
 import uuid
 
@@ -605,3 +606,82 @@ def test_issuer_not_configured_names_the_variable(client, env, monkeypatch):
     monkeypatch.delenv("ATTESTATION_ISSUER")
     r = client.post(api("/applications"), headers=_h("erika"), json=onboarding(env.sign()))
     assert r.status_code == 502 and "ATTESTATION_ISSUER" in r.json()["detail"]
+
+
+# ------------------------------------------------------------- findings of the pull request review
+def test_postal_code_reported_as_from_attestation_is_stored(client, env):
+    address = {"streetName": "Musterstraße", "streetNumber": "1", "city": "Stuttgart", "countryCode": "DE"}
+    r = client.post(api("/applications"), headers=_h("erika"), json=onboarding(env.sign(), companyData={"address": address}))
+    assert r.status_code == 201
+    assert {c["field"]: c["result"] for c in r.json()["comparison"]}["POSTAL_CODE"] == "FROM_ATTESTATION"
+    assert r.json()["companyData"]["address"]["postalCode"] == "70569"
+
+
+def _without_euid(env) -> dict:
+    return env.payload(company="maschinenbau") | {"company": {"legal_name": "Beispiel Maschinenbau GmbH",
+                                                              "ebwoid": "EBWOID-DE-0000000001", "country": "DE",
+                                                              "address": {"street_address": "Musterstraße 1", "postal_code": "70569",
+                                                                          "locality": "Stuttgart", "country": "DE"}}}
+
+
+def test_replacement_checks_the_new_identifiers(client, env):
+    body = onboarding(env.sign(payload=_without_euid(env)))
+    aid = client.post(api("/applications"), headers=_h("erika"), json=body).json()["id"]
+    wrong_country = env.payload() | {"company": {**_without_euid(env)["company"], "euid": "FRXX001T.HRB100001"}}
+    r = client.put(api(f"/applications/{aid}/attestation"), headers=_h("erika"), json={"attestation": env.sign(payload=wrong_country)})
+    assert r.status_code == 400 and r.json()["type"] == "urn:c1-m2:problem:validation"
+    assert [i["type"] for i in interface.applications[aid]["companyData"]["identifiers"]] == ["EBWOID", "VAT_ID"]
+
+
+def test_replacement_checks_the_existing_company(client, env):
+    no_euid = env.payload(company="werkzeugbau")
+    no_euid["company"] = {k: v for k, v in no_euid["company"].items() if k != "euid"}
+    body = {"kind": "REACTIVATION", "verification": "EBW", "companyId": WERKZEUGBAU, "attestation": env.sign(payload=no_euid)}
+    aid = client.post(api("/applications"), headers=_h("erika"), json=body).json()["id"]
+    other = env.payload(company="werkzeugbau")
+    other["company"] = {**other["company"], "euid": "DEXX001T.HRB999999"}
+    r = client.put(api(f"/applications/{aid}/attestation"), headers=_h("erika"), json={"attestation": env.sign(payload=other)})
+    assert r.status_code == 400 and r.json()["type"] == "urn:c1-m2:problem:attestation-mismatch" and r.json()["fields"] == ["EUID"]
+
+
+def test_upload_reads_at_most_the_limit_plus_one_byte(client, env, monkeypatch):
+    aid = client.post(api("/applications"), headers=_h("erika"), json=documents_body()).json()["id"]
+    monkeypatch.setenv("DOCUMENT_MAX_BYTES", "10")
+    seen = []
+    original = interface.upload_document
+
+    def recording(application_id, sub, document_type, file_name, content):
+        seen.append(len(content))
+        return original(application_id, sub, document_type, file_name, content)
+    monkeypatch.setattr(interface, "upload_document", recording)
+    assert upload(client, aid, content=PDF + b"x" * 1000).status_code == 400
+    assert seen == [11]
+
+
+def _during_submission(env, client, action) -> list:
+    """The document request waits for the lock while the application is submitted: the state is read under the lock."""
+    outcome = []
+
+    def run():
+        try:
+            outcome.append(action())
+        except Problem as p:
+            outcome.append(p)
+    return outcome, threading.Thread(target=run)
+
+
+def test_document_changes_cannot_follow_a_submission(client, env):
+    aid = client.post(api("/applications"), headers=_h("erika"), json=documents_body()).json()["id"]
+    doc = upload(client, aid).json()["documentId"]
+    actions = [lambda: interface.upload_document(aid, ERIKA, "OTHER", "late.pdf", PDF),
+               lambda: interface.delete_document(aid, doc, ERIKA)]
+    for action in actions:
+        interface.applications[aid]["status"] = "CREATED"
+        outcome, thread = _during_submission(env, client, action)
+        with interface._lock:
+            thread.start()
+            time.sleep(0.2)
+            interface.applications[aid]["status"] = "SUBMITTED"
+        thread.join(5)
+        assert isinstance(outcome[0], Problem) and outcome[0].status == 409
+    assert [d["documentId"] for d in interface.applications[aid]["documents"]] == [doc]

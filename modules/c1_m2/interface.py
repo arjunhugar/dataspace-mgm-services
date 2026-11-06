@@ -325,8 +325,9 @@ def _company_data_ebw(company: dict, given: dict) -> tuple[dict, list[dict]]:
     identifiers += [{"type": t, "value": v, "source": "APPLICANT"} for t, v in ids.items()
                     if t != "EBWOID" and not (t == "EUID" and euid)]
     street = " ".join(p for p in (address.get("streetName"), address.get("streetNumber")) if p) if address else None
-    final = address or {"streetName": claim.get("street_address"), "streetNumber": None, "postalCode": claim.get("postal_code"),
-                        "city": claim.get("locality"), "region": None, "countryCode": company["country"]}
+    final = ({**address, "postalCode": address.get("postalCode") or claim.get("postal_code")} if address else
+             {"streetName": claim.get("street_address"), "streetNumber": None, "postalCode": claim.get("postal_code"),
+              "city": claim.get("locality"), "region": None, "countryCode": company["country"]})
     comparison = [{"field": "EBWOID", "result": "FROM_ATTESTATION"},
                   {"field": "EUID", "result": "FROM_ATTESTATION"} if euid else _compare("EUID", ids.get("EUID"), None),
                   {"field": "COUNTRY", "result": "MATCH" if address else "FROM_ATTESTATION"},
@@ -541,6 +542,9 @@ def replace_attestation(application_id: str, claims: dict, token: object) -> dic
     if fields:
         raise Problem(MODULE, 400, "attestation-mismatch", fields=fields)
     data, comparison = _company_data_ebw(new, a["_given"])
+    _check_reference_data(data, a["companyRoles"], a["verification"])
+    if a["_companyRef"]:
+        _check_existing_identifiers(calls.company_by_id(a["companyId"]) or {}, new["ebwoid"], euid or applicant_euid)
     with _lock:
         if payload["jti"] in used_jtis:
             raise Problem(MODULE, 409, "attestation-used")
@@ -627,6 +631,10 @@ def withdraw_application(application_id: str, sub: str) -> dict:
 
 
 # --------------------------------------------------------------------- supporting documents (7.7 to 7.9)
+def document_max_bytes() -> int:
+    return int(os.environ.get("DOCUMENT_MAX_BYTES") or 10485760)
+
+
 def upload_document(application_id: str, sub: str, document_type: str, file_name: str | None, content: bytes) -> dict:
     a = own(sub, application_id)
     if a["status"] != "CREATED" or a["verification"] == "EBW":
@@ -639,10 +647,12 @@ def upload_document(application_id: str, sub: str, document_type: str, file_name
     content_type = next((t for magic, t in SIGNATURES if content.startswith(magic)), None)
     if content_type is None:
         errors.append(_err("file", "PDF, PNG or JPEG, checked by the first bytes"))
-    maximum = int(os.environ.get("DOCUMENT_MAX_BYTES") or 10485760)
+    maximum = document_max_bytes()
     if not 1 <= len(content) <= maximum:
         errors.append(_err("file", f"1 to {maximum} bytes"))
     with _lock:
+        if a["status"] != "CREATED":
+            raise Problem(MODULE, 409, "invalid-state", detail=f"application is {a['status']}")
         if len(a["documents"]) >= int(os.environ.get("DOCUMENT_MAX_COUNT") or 10):
             errors.append(_err("file", "too many supporting documents"))
         if errors:
@@ -675,10 +685,10 @@ def staff_document(application_id: str, document_id: str, sub: str) -> tuple[dic
 
 def delete_document(application_id: str, document_id: str, sub: str) -> None:
     a = own(sub, application_id)
-    if a["status"] != "CREATED":
-        raise Problem(MODULE, 409, "invalid-state", detail=f"application is {a['status']}")
-    document(a, document_id)
     with _lock:
+        if a["status"] != "CREATED":
+            raise Problem(MODULE, 409, "invalid-state", detail=f"application is {a['status']}")
+        document(a, document_id)
         a["documents"] = [d for d in a["documents"] if d["documentId"] != document_id]
         a["_files"].pop(document_id, None)
         a["changedAt"] = _now()

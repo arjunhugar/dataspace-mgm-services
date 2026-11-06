@@ -136,7 +136,7 @@ def _download(info: dict, content: bytes) -> Response:
 def upload_document(applicationId: str, response: Response, file: UploadFile = File(...), documentType: str = Form(...),
                     claims: dict = standin.perm(MODULE, "POST", "/applications/{applicationId}/documents")):
     try:
-        content = file.file.read()
+        content = file.file.read(interface.document_max_bytes() + 1)
     finally:
         file.file.close()
     info = interface.upload_document(applicationId, claims["sub"], documentType, file.filename, content)
