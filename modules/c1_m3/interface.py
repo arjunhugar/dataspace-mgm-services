@@ -178,6 +178,11 @@ def open_review(input: dict) -> dict:
                     if old and old["result"] != "ERROR":
                         continue
                     result, details = checks.run(key, app)
+                    rejected = case.setdefault("_rejected", set())
+                    if details.pop(checks.REJECTED, False):
+                        rejected.add(key)
+                    else:
+                        rejected.discard(key)
                     case["checks"][key] = {"checkKey": key, "result": result, "details": details,
                                            "checkedAt": _now(), "attempts": (old or {}).get("attempts", 0) + 1}
                     if key == "CSP_MATCH_EXPECTED":
@@ -189,6 +194,9 @@ def open_review(input: dict) -> dict:
         else:
             errors = []
         _audit(case, "open-review", step=input)
+        if errors and set(errors) <= case.get("_rejected", set()):   # a repetition does not help (OPEN-QUESTIONS 11)
+            raise Problem(MODULE, 502, "neighbour-rejected", detail=f"checks with ERROR: {', '.join(errors)}",
+                          pendingChecks=errors, retryable=False)
         if errors:
             raise Problem(MODULE, 502, "upstream-error", detail=f"checks with ERROR: {', '.join(errors)}",
                           pendingChecks=errors, retryable=True)
