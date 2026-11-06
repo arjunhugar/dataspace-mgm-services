@@ -43,6 +43,7 @@ ORDER = ["ATTESTATION_VALID", "REPRESENTATION_CONFIRMED", "COMPANY_DATA_MATCH", 
 ATTESTATION_CHECKS = {"ATTESTATION_VALID", "REPRESENTATION_CONFIRMED", "COMPANY_DATA_MATCH"}
 DUPLICATE_STATUSES = ["REQUESTED", "ACTIVE", "INACTIVE"]
 MATCH_ORDER = ["EBWOID", "EUID", "NAME"]
+REJECTED = "_rejected"
 
 
 def _time(value: str | None) -> dt.datetime | None:
@@ -77,6 +78,14 @@ def company_data_match(app: dict) -> tuple[str, dict]:
     return ("FAILED" if mismatched else "PASSED"), {"mismatchedFields": mismatched, "unverifiedFields": unverified}
 
 
+def _neighbour_failed(name: str, problem: Problem) -> tuple[str, dict]:
+    """`ERROR` of a check. A rejected request (502 `neighbour-rejected`) would be rejected again; `open-review`
+    reads the private mark, which is not part of the finding, to answer that a repetition does not help."""
+    if problem.ext.get("retryable") is False:
+        return "ERROR", {"error": f"{name} rejected the request", REJECTED: True}
+    return "ERROR", {"error": f"{name} not reachable"}
+
+
 def no_duplicate(app: dict) -> tuple[str, dict]:
     types = [t.strip() for t in os.environ.get("DUPLICATE_CHECK_IDENTIFIER_TYPES", "EUID,EBWOID,VAT_ID,LEI_CODE")
              .split(",") if t.strip()]
@@ -85,8 +94,8 @@ def no_duplicate(app: dict) -> tuple[str, dict]:
         return "PASSED", {"duplicates": []}
     try:
         found = calls.identifier_matches(ids, app["companyId"], DUPLICATE_STATUSES)
-    except Problem:
-        return "ERROR", {"error": "C3-M1 not reachable"}
+    except Problem as p:
+        return _neighbour_failed("C3-M1", p)
     dups = [{"companyId": m["companyId"], "companyStatus": m["status"], "matchedOn": m["matchedOn"]} for m in found]
     return ("FAILED" if dups else "PASSED"), {"duplicates": dups}
 
@@ -143,15 +152,15 @@ def csp_match_expected(app: dict) -> tuple[str, dict]:
     try:
         found = calls.find_companies(ids.get("EBWOID"), ids.get("EUID"), data.get("legalName"),
                                      (data.get("address") or {}).get("countryCode"))
-    except Problem:
-        return "ERROR", {"error": "C3-M2 not reachable"}
+    except Problem as p:
+        return _neighbour_failed("C3-M2", p)
     matches = _merge(found)
     company_bpn = None
     if matches and (kind == "REACTIVATION" or (kind == "TRANSFER" and existing)):
         try:
             company = calls.get_company(app["companyId"])
-        except Problem:
-            return "ERROR", {"error": "C3-M1 not reachable"}
+        except Problem as p:
+            return _neighbour_failed("C3-M1", p)
         company_bpn = (company or {}).get("bpn")
     outcome, expected = _evaluate(kind, matches, company_bpn, existing)
     if expected is not None:

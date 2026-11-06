@@ -319,6 +319,37 @@ def test_09_neighbour_not_reachable_then_repeated(env, client, which, key):
     assert attempts == {k: 2 if k == key else 1 for k in attempts}
 
 
+def test_09_rejected_request_is_not_retryable(env, monkeypatch):
+    rejected = Problem("c1-m3", 502, "neighbour-rejected", detail="c3-m1 answered 400", retryable=False)
+
+    def reject(*_args):
+        raise rejected
+    monkeypatch.setattr(interface.calls, "identifier_matches", reject)
+    with pytest.raises(Problem) as e:
+        step("open", "A9")
+    assert problem(e)["status"] == 502 and problem(e)["type"] == "urn:c1-m3:problem:neighbour-rejected"
+    assert problem(e)["retryable"] is False and problem(e)["pendingChecks"] == ["NO_DUPLICATE"]
+    check = checks_of("A9")["NO_DUPLICATE"]
+    assert check["result"] == "ERROR" and check["details"] == {"error": "C3-M1 rejected the request"}
+    assert "_rejected" not in interface.view(interface.cases[case_id("A9")])
+
+    env.write("csp", "unavailable")   # together with a temporary error, a repetition can still help
+    interface.cases[case_id("A9")]["checks"].pop("CSP_MATCH_EXPECTED")
+    with pytest.raises(Problem) as e:
+        step("open", "A9", 2)
+    assert problem(e)["type"] == "urn:c1-m3:problem:upstream-error" and problem(e)["retryable"] is True
+
+    env.write("csp", CSP)
+    monkeypatch.undo()
+    monkeypatch.setenv("C1_M2_URL", "")
+    monkeypatch.setenv("C3_M1_URL", "")
+    monkeypatch.setenv("C3_M2_URL", "")
+    env.env(STUB_APPLICATIONS_FILE=str(env.files["applications"]), STUB_COMPANIES_FILE=str(env.files["companies"]),
+            STUB_CSP_FILE=str(env.files["csp"]))
+    assert step("open", "A9", 3)["state"] == "DONE"
+    assert not interface.cases[case_id("A9")]["_rejected"]
+
+
 # ------------------------------------------------------------------------------ 10 to 13: CSP match
 def test_10_onboarding_registered_at_other_osp(env):
     step("open", "A10")
