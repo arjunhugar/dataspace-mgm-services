@@ -135,7 +135,11 @@ def _download(info: dict, content: bytes) -> Response:
 @router.post("/applications/{applicationId}/documents", status_code=201)
 def upload_document(applicationId: str, response: Response, file: UploadFile = File(...), documentType: str = Form(...),
                     claims: dict = standin.perm(MODULE, "POST", "/applications/{applicationId}/documents")):
-    info = interface.upload_document(applicationId, claims["sub"], documentType, file.filename, file.file.read())
+    try:
+        content = file.file.read()
+    finally:
+        file.file.close()
+    info = interface.upload_document(applicationId, claims["sub"], documentType, file.filename, content)
     response.headers["Location"] = f"{router.prefix}/applications/{applicationId}/documents/{info['documentId']}"
     return info
 
