@@ -360,12 +360,6 @@ def test_13_reactivation(client, env):
     r = client.post(api("/applications"), headers=_h("erika"), json=_reactivation(env, company=OSP_COMPANY, name="maschinenbau"))
     assert r.status_code == 409 and r.json()["type"] == "urn:c1-m2:problem:company-not-eligible" and r.json()["companyStatus"] == "ACTIVE"
     r = client.post(api("/applications"), headers=_h("erika"), json=_reactivation(env, name="maschinenbau"))
-    doc_reactivation = {"kind": "REACTIVATION", "verification": "DOCUMENTS", "companyId": WERKZEUGBAU,
-                        "companyData": {"legalName": "Beispiel Werkzeugbau GmbH",
-                                        "address": {"streetName": "Musterstraße 1", "postalCode": "70569", "city": "Stuttgart", "countryCode": "DE"},
-                                        "identifiers": [{"type": "VAT_ID", "value": "DE123456789"}]}}
-    r_doc = client.post(api("/applications"), headers=_h("erika"), json=doc_reactivation)
-    assert r_doc.status_code == 400 and r_doc.json()["type"] == "urn:c1-m2:problem:attestation-mismatch" and "EBWOID" in r_doc.json()["fields"]
     assert r.status_code == 400 and r.json()["type"] == "urn:c1-m2:problem:attestation-mismatch" and "EBWOID" in r.json()["fields"]
     r = client.post(api("/applications"), headers=_h("erika"), json=onboarding(env.sign(), companyId=WERKZEUGBAU))
     assert r.status_code == 400 and r.json()["type"] == "urn:c1-m2:problem:validation"

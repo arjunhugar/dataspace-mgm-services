@@ -341,7 +341,7 @@ def _check_existing_identifiers(company: dict, ebwoid: str | None, euid: str | N
     """6.2: the company of the application must be the existing one."""
     kept = {i["type"]: i["value"] for i in company.get("identifiers") or []}
     fields = []
-    if kept.get("EBWOID") and kept["EBWOID"] != ebwoid:
+    if ebwoid and kept.get("EBWOID") and kept["EBWOID"] != ebwoid:
         fields.append("EBWOID")
     if euid and kept.get("EUID") and catalog.normalise_identifier("EUID", kept["EUID"]) != catalog.normalise_identifier("EUID", euid):
         fields.append("EUID")

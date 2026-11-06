@@ -36,3 +36,4 @@
 | 7 | Persistence: README 4 asks for PostgreSQL and `bytea`; the kit keeps data in memory. One lock replaces the row locks and partial unique indexes. | README 4, 6.11 | In memory, one module-wide lock. | organisers |
 | 8 | Case 11 "older than `ATTESTATION_MAX_AGE`" also applies the clock tolerance. | README 6.4 | `now - iat <= max age + ATTESTATION_CLOCK_SKEW_SECONDS`. | spec authors |
 | 9 | A JWKS fetch failure at creation is 502, at the query `UNAVAILABLE`; the JWKS comes from a file without cache in tests. | README 6.4, 9.1 | As written; `ATTESTATION_JWKS_FILE` is read on every use, so removing a key takes effect at once. | spec authors |
+| 10 | Reactivation on the documents path for a company with an EBWOID in C3-M1: nothing proves the EBWOID without a Business Wallet. | README 6.2, 6.6, 6.9, OP-35 | Allowed; the check applies to the EUID the person gives, and OSP staff review by hand. | spec authors, OSPs |
